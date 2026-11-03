@@ -38,8 +38,10 @@ Requires Python 3.9+ and paramiko.
 from __future__ import annotations
 
 import argparse
+import csv
 import getpass
 import hmac
+import io
 import json
 import mimetypes
 import posixpath
@@ -53,6 +55,7 @@ import threading
 import uuid
 import webbrowser
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -307,6 +310,32 @@ class WriteGuard:
             self.sftp.rename(tmp, path)
 
 
+FRONT_MATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
+
+
+def stamp_note(text, audio, note_id, annotator):
+    """Write the note's header from what the helper knows, so every note names
+    its recording, sheet ID and annotator, however the page built it."""
+    meta, body = {}, text
+    m = FRONT_MATTER_RE.match(text)
+    if m:
+        for line in m.group(1).splitlines():
+            key, sep, value = line.partition(":")
+            if sep and key.strip():
+                meta[key.strip()] = value.strip()
+        body = text[m.end():]
+    meta.pop("labeller", None)  # older notes
+    meta["audio"] = json.dumps(audio, ensure_ascii=False)
+    if note_id:
+        meta["id"] = str(note_id)
+    meta["annotator"] = json.dumps(annotator, ensure_ascii=False)
+    meta.setdefault("updated", datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+    first = ["audio", "id", "annotator", "updated"]
+    keys = [k for k in first if k in meta] + [k for k in meta if k not in first]
+    header = "\n".join(f"{k}: {meta[k]}" for k in keys)
+    return f"---\n{header}\n---\n\n{body.lstrip(chr(13) + chr(10))}"
+
+
 def rel_is_root(rel):
     return posixpath.normpath((rel or "").strip("/") or ".") == "."
 
@@ -545,13 +574,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _read_sheet(self, sftp):
+        """icd-metadata.csv from the dataset folder, or None if it isn't there."""
+        try:
+            with sftp.open(posixpath.join(self.remote.root, METADATA_FILE), "rb") as fh:
+                return fh.read().decode("utf-8-sig", errors="replace")
+        except FileNotFoundError:
+            return None
+
+    def _sheet_id(self, sftp, audio_rel):
+        """The recording's Database ID in the metadata sheet, if it has one."""
+        sheet = self._read_sheet(sftp)
+        if sheet is None:
+            return None
+        for row in csv.DictReader(io.StringIO(sheet)):
+            if (row.get("File") or "").strip() == audio_rel:
+                return (row.get("Database ID") or "").strip() or None
+        return None
+
     def api_metadata(self):
         with self.remote.sftp() as sftp:
-            try:
-                with sftp.open(posixpath.join(self.remote.root, METADATA_FILE), "rb") as fh:
-                    text = fh.read().decode("utf-8-sig", errors="replace")
-            except FileNotFoundError:
-                raise ApiError(HTTPStatus.NOT_FOUND, f"No {METADATA_FILE} in the dataset folder")
+            text = self._read_sheet(sftp)
+        if text is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"No {METADATA_FILE} in the dataset folder")
         body = text.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self._cors_headers()
@@ -647,6 +692,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_note_put(self):
         annotator = self._annotator()
+        audio_rel = posixpath.relpath(self._audio_path(), self.remote.root)
         folder = posixpath.join(self._annotations_root, annotator)
         path = posixpath.join(folder, self._note_name())
         length = int(self.headers.get("Content-Length") or 0)
@@ -662,6 +708,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "text must be a string")
 
         with self.remote.sftp() as sftp:
+            # The header always carries the recording, its sheet ID and the annotator.
+            text = stamp_note(text, audio_rel, self._sheet_id(sftp, audio_rel), annotator)
             guard = WriteGuard(sftp, self.remote.root)
             for directory in (self._annotations_root, folder):
                 try:

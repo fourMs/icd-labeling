@@ -45,6 +45,10 @@ updated: 2026-11-03T10:05:21.426Z
 Free-text notes from the annotator.
 ```
 
+The helper writes the `audio`, `id` and `annotator` header fields itself on
+every save, taking the ID from `icd-metadata.csv` on the drive, so new notes
+always carry their sheet ID.
+
 The annotator name defaults to the UiO login name. It can be changed in the
 top bar (letters, digits, `.`, `_`, `-`), and it becomes the folder name. In
 Annotate mode each annotator only sees and edits their own notes; Browse mode
