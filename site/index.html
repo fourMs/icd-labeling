@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICD Labelling</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%232f6fde' stroke-width='3'/><circle cx='16' cy='9' r='4' fill='%232f6fde'/></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <h1>ICD Labelling</h1>
+    <button id="switch-mode" class="mode-badge" hidden title="Choose another mode"></button>
+    <span id="remote" class="remote" title="Connected drive"></span>
+    <label class="labeller annotate-only" title="Your notes are saved in annotations/<this name>/ on the drive">
+      Annotator
+      <input id="annotator" type="text" placeholder="UiO username" autocomplete="username" spellcheck="false">
+    </label>
+    <button id="disconnect" class="ghost" hidden>Disconnect</button>
+  </header>
+
+  <!-- Shown until a bridge connection works -->
+  <main id="connect-view" class="connect" hidden>
+    <section class="card">
+      <h2>Connect to the drive</h2>
+      <p>The site reaches the internal drive through a small helper that runs on your computer. It logs in with your own SSH account, and nothing leaves your machine except to the drive.</p>
+      <ol class="steps">
+        <li>
+          <a href="sftp_bridge.py" download>Download <code>sftp_bridge.py</code></a> and install its one dependency:
+          <pre><code>pip install paramiko</code></pre>
+        </li>
+        <li>
+          Start it and log in with your UiO account (Authenticator approval and password are typed in the terminal, not here):
+          <pre><code>python3 sftp_bridge.py --user <var>your-uio-username</var></code></pre>
+          It opens the Intercontinental Database folder on <code>login.uio.no</code>. Pass another <code><var>user</var>@<var>host</var>:<var>/path</var></code> to use a different folder.
+        </li>
+        <li>It opens this page already connected. Or paste the link it printed:</li>
+      </ol>
+      <form id="connect-form" class="connect-form">
+        <input id="connect-url" type="text" placeholder="https://…#bridge=…&amp;token=…" spellcheck="false" autocomplete="off">
+        <button type="submit" class="primary">Connect</button>
+      </form>
+      <p id="connect-error" class="error" role="alert"></p>
+    </section>
+  </main>
+
+  <!-- Chosen after every login -->
+  <main id="mode-view" class="connect" hidden>
+    <section class="modes">
+      <h2>What would you like to do?</h2>
+      <div class="mode-cards">
+        <button class="mode-card" data-mode="annotate">
+          <span class="mode-title">Annotate</span>
+          <span class="mode-text">Listen without context and write notes. Recordings are shown only by their ID: no file names, places, metadata or photos.</span>
+        </button>
+        <button class="mode-card" data-mode="browse">
+          <span class="mode-title">Browse</span>
+          <span class="mode-text">See every recording with its metadata and photo, and listen to it.</span>
+        </button>
+      </div>
+      <p id="mode-status" class="mode-status"></p>
+    </section>
+  </main>
+
+  <!-- Workspace for both modes; .annotate-only / .browse-only parts switch with the mode -->
+  <main id="work-view" class="workspace" hidden>
+    <aside class="browser">
+      <div class="browser-tools">
+        <input id="filter" type="search" spellcheck="false">
+        <span id="progress" class="progress"></span>
+      </div>
+      <ul id="files" class="files" role="listbox" aria-label="Recordings"></ul>
+    </aside>
+
+    <section class="editor">
+      <div id="empty" class="empty">Pick a recording on the left.</div>
+
+      <div id="file-view" hidden>
+        <div class="file-head">
+          <h2 id="file-name"></h2>
+          <span id="file-meta" class="meta"></span>
+          <div class="nav-buttons">
+            <label class="check annotate-only" title="Next and save &amp; next jump to a random recording you haven’t annotated yet"><input id="shuffle" type="checkbox"> Random</label>
+            <button id="prev" class="ghost" title="Previous recording">‹ Prev</button>
+            <button id="next" class="ghost" title="Next recording">Next ›</button>
+          </div>
+        </div>
+
+        <section id="meta" class="meta-card browse-only" hidden>
+          <button id="photo-wrap" class="photo" hidden title="Show full size"><img id="photo" alt="Photo of the recording location"></button>
+          <div class="meta-body">
+            <dl id="meta-list" class="meta-list"></dl>
+            <div id="meta-flags" class="meta-flags"></div>
+          </div>
+        </section>
+
+        <p id="no-audio" class="no-audio" hidden>This entry is in the metadata sheet, but its recording isn’t on the drive.</p>
+
+        <div id="player-box" class="player">
+          <div class="wave-wrap">
+            <canvas id="wave" class="wave" aria-label="Playback position, click to seek"></canvas>
+            <div id="load-status" class="load-status"></div>
+          </div>
+
+          <div class="transport">
+            <button id="play" class="play" disabled aria-label="Play">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path id="play-icon" d="M8 5v14l11-7z"/></svg>
+            </button>
+            <span id="time" class="time">0:00 / 0:00</span>
+            <label class="check browse-only"><input id="loop" type="checkbox"> Loop</label>
+            <div class="segmented browse-only" role="radiogroup" aria-label="Rendering">
+              <label><input type="radio" name="render" value="binaural" checked> Binaural</label>
+              <label><input type="radio" name="render" value="omni"> Omni (W)</label>
+            </div>
+            <label class="slider">Volume
+              <input id="gain" type="range" min="-30" max="12" step="1" value="0">
+              <output id="gain-out">0 dB</output>
+            </label>
+          </div>
+
+          <div class="spatial browse-only">
+            <canvas id="dial" class="dial" width="180" height="180" aria-label="Listening direction; drag to turn"></canvas>
+            <div class="spatial-controls">
+              <label class="slider">Yaw
+                <input id="yaw" type="range" min="-180" max="180" step="1" value="0">
+                <output id="yaw-out">0°</output>
+              </label>
+              <label class="slider">Pitch
+                <input id="pitch" type="range" min="-90" max="90" step="1" value="0">
+                <output id="pitch-out">0°</output>
+              </label>
+              <button id="reset-view" class="ghost small">Face front</button>
+              <p id="doa" class="doa"></p>
+              <p class="hint">Drag the dial to turn your head. The dot shows where the sound energy comes from.</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="notes-box" class="notes">
+          <div class="notes-head">
+            <h3>Notes</h3>
+            <span id="note-status" class="note-status"></span>
+          </div>
+          <div id="notes-list" class="notes-list browse-only"></div>
+          <textarea id="note" class="annotate-only" spellcheck="true" placeholder="What do you hear? Sources, events, timestamps, quality issues…"></textarea>
+          <div class="notes-actions annotate-only">
+            <span class="keys"><kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> seek · <kbd id="mod-key">Ctrl</kbd>+<kbd>S</kbd> save · <kbd id="mod-key2">Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next</span>
+            <button id="save" class="primary">Save note</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="lightbox" class="lightbox" hidden><img id="lightbox-img" alt=""></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

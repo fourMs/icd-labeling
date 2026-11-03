@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+# Copied in by the Pages workflow
+site/sftp_bridge.py
